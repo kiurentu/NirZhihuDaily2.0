@@ -15,21 +15,29 @@ class ThemeViewController: UIViewController {
     
     @IBOutlet weak var tableView: UITableView!
     @IBOutlet weak var navTitleLabel: UILabel!
+    @IBOutlet weak var topConstant: NSLayoutConstraint!
     
     var id = ""
     var name = ""
-    var selectedIndex: [Int] = []
+    var firstDisplay = true
+    var dragging = false
+    var triggered = false
     var navImageView: UIImageView!
     var themeSubview: ParallaxHeaderView!
+    var animator: ZFModalTransitionAnimator!
+    var loadCircleView: PNCircleChart!
+    var loadingView: UIActivityIndicatorView!
     
     override func viewDidLoad() {
         super.viewDidLoad()
+        
+        self.automaticallyAdjustsScrollViewInsets = false
         
         //清空原数据
         self.appCloud().themeContent = nil
         
         //拿到新数据
-        refreshData()
+        refreshData(nil)
         
         //创建leftBarButtonItem
         let leftButton = UIBarButtonItem(image: UIImage(named: "leftArrow"), style: .Plain, target: self.revealViewController(), action: "revealToggle:")
@@ -38,6 +46,7 @@ class ThemeViewController: UIViewController {
         
         //为当前view添加手势识别
         self.view.addGestureRecognizer(self.revealViewController().panGestureRecognizer())
+        self.view.addGestureRecognizer(self.revealViewController().tapGestureRecognizer())
         
         //生成并配置HeaderImageView
         navImageView = UIImageView(frame: CGRectMake(0, 0, self.view.frame.width, 64))
@@ -56,14 +65,41 @@ class ThemeViewController: UIViewController {
         self.navigationController?.navigationBar.lt_setBackgroundColor(UIColor.clearColor())
         self.navigationController?.navigationBar.shadowImage = UIImage()
         
+        //初始化下拉加载loadCircleView
+        let comp1 = self.navTitleLabel.frame.width/2
+        let comp2 = (self.navTitleLabel.text! as NSString).sizeWithAttributes(nil).width/2
+        let loadCircleViewXPosition = comp1 - comp2 - 35
+        
+        loadCircleView = PNCircleChart(frame: CGRect(x: loadCircleViewXPosition, y: 3, width: 15, height: 15), total: 100, current: 0, clockwise: true, shadow: false, shadowColor: nil, displayCountingLabel: false, overrideLineWidth: 1)
+        loadCircleView.backgroundColor = UIColor.clearColor()
+        loadCircleView.strokeColor = UIColor.whiteColor()
+        loadCircleView.strokeChart()
+        loadCircleView.transform = CGAffineTransformMakeRotation(CGFloat(M_PI))
+        self.navTitleLabel.addSubview(loadCircleView)
+        
+        //初始化下拉加载loadingView
+        loadingView = UIActivityIndicatorView(frame: CGRect(x: loadCircleViewXPosition+2.5, y: 5.5, width: 10, height: 10))
+        self.navTitleLabel.addSubview(loadingView)
+        
         //tableView基础设置
         self.tableView.delegate = self
         self.tableView.dataSource = self
         self.tableView.separatorStyle = .None
         self.tableView.showsVerticalScrollIndicator = false
     }
+    
+    override func viewDidAppear(animated: Bool) {
+        
+        self.tableView.reloadData()
+        if !firstDisplay {
+            self.topConstant.constant = -44
+        } else {
+            self.topConstant.constant = -64
+            firstDisplay = false
+        }
+    }
 
-    func refreshData() {
+    func refreshData(completionHandler: (()->())?) {
         //更改标题
         navTitleLabel.text = name
         
@@ -108,6 +144,9 @@ class ThemeViewController: UIViewController {
             
             //刷新数据
             self.tableView.reloadData()
+            if let completionHandler = completionHandler {
+                completionHandler()
+            }
         }
     }
 
@@ -127,6 +166,44 @@ extension ThemeViewController: UITableViewDelegate, UITableViewDataSource, Paral
     func scrollViewDidScroll(scrollView: UIScrollView) {
         let header = self.tableView.tableHeaderView as! ParallaxHeaderView
         header.layoutThemeHeaderViewForScrollViewOffset(scrollView.contentOffset)
+        let offsetY = scrollView.contentOffset.y
+        if offsetY <= 0 {
+            let ratio = -offsetY*2
+            if ratio <= 100 {
+                if triggered == false && loadCircleView.hidden == true {
+                    loadCircleView.hidden = false
+                }
+                loadCircleView.updateChartByCurrent(ratio)
+            } else {
+                if loadCircleView.current != 100 {
+                    loadCircleView.updateChartByCurrent(100)
+                }
+                //第一次检测到松手
+                if !dragging && !triggered {
+                    loadCircleView.hidden = true
+                    loadingView.startAnimating()
+                    refreshData({ () -> () in
+                        self.loadingView.stopAnimating()
+                    })
+                    triggered = true
+                }
+            }
+            if triggered == true && offsetY == 0 {
+                triggered = false
+            }
+        } else {
+            if loadCircleView.hidden != true {
+                loadCircleView.hidden = true
+            }
+        }
+    }
+    
+    func scrollViewDidEndDragging(scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        dragging = false
+    }
+    
+    func scrollViewWillBeginDragging(scrollView: UIScrollView) {
+        dragging = true
     }
     
     //设置滑动极限
@@ -145,6 +222,9 @@ extension ThemeViewController: UITableViewDelegate, UITableViewDataSource, Paral
     }
     
     func tableView(tableView: UITableView, cellForRowAtIndexPath indexPath: NSIndexPath) -> UITableViewCell {
+        //取得已读新闻数组以供配置
+        let readNewsIdArray = NSUserDefaults.standardUserDefaults().objectForKey(Keys.readNewsId) as! [String]
+        
         if indexPath.row == 0 {
             let cell = tableView.dequeueReusableCellWithIdentifier("themeEditorTableViewCell") as! ThemeEditorTableViewCell
             for (index, editorsAvatar) in appCloud().themeContent!.editorsAvatars.enumerate() {
@@ -165,7 +245,7 @@ extension ThemeViewController: UITableViewDelegate, UITableViewDataSource, Paral
         guard tempContentStoryItem.images[0] != "" else {
             let cell = tableView.dequeueReusableCellWithIdentifier("themeTextTableViewCell") as! ThemeTextTableViewCell
             //验证是否已被点击过
-            if let _ = selectedIndex.indexOf(indexPath.row) {
+            if let _ = readNewsIdArray.indexOf(tempContentStoryItem.id) {
                 cell.themeTextLabel.textColor = UIColor.lightGrayColor()
             } else {
                 cell.themeTextLabel.textColor = UIColor.blackColor()
@@ -177,7 +257,7 @@ extension ThemeViewController: UITableViewDelegate, UITableViewDataSource, Paral
         //处理图片存在的情况
         let cell = tableView.dequeueReusableCellWithIdentifier("themeContentTableViewCell") as! ThemeContentTableViewCell
         //验证是否已被点击过
-        if let _ = selectedIndex.indexOf(indexPath.row) {
+        if let _ = readNewsIdArray.indexOf(tempContentStoryItem.id) {
             cell.themeContentLabel.textColor = UIColor.lightGrayColor()
         } else {
             cell.themeContentLabel.textColor = UIColor.blackColor()
@@ -201,20 +281,34 @@ extension ThemeViewController: UITableViewDelegate, UITableViewDataSource, Paral
             return
         }
         
-        selectedIndex.append(indexPath.row)
-        if tableView.cellForRowAtIndexPath(indexPath) is ThemeContentTableViewCell {
-            (tableView.cellForRowAtIndexPath(indexPath) as! ThemeContentTableViewCell).themeContentLabel.textColor = UIColor.lightGrayColor()
-        } else {
-            (tableView.cellForRowAtIndexPath(indexPath) as! ThemeTextTableViewCell).themeTextLabel.textColor = UIColor.lightGrayColor()
-        }
-        
         //拿到webViewController
         let webViewController = self.storyboard?.instantiateViewControllerWithIdentifier("webViewController") as! WebViewController
         webViewController.newsId = appCloud().themeContent!.stories[self.tableView.indexPathForSelectedRow!.row - 1].id
         webViewController.index = indexPath.row - 1
         webViewController.isThemeStory = true
 
+        //取得已读新闻数组以供修改
+        var readNewsIdArray = NSUserDefaults.standardUserDefaults().objectForKey(Keys.readNewsId) as! [String]
+        
+        //记录已被选中的id
+        readNewsIdArray.append(webViewController.newsId)
+        NSUserDefaults.standardUserDefaults().setObject(readNewsIdArray, forKey: Keys.readNewsId)
+        
+        //对animator进行初始化
+        animator = ZFModalTransitionAnimator(modalViewController: webViewController)
+        self.animator.dragable = true
+        self.animator.bounces = false
+        self.animator.behindViewAlpha = 0.7
+        self.animator.behindViewScale = 0.9
+        self.animator.transitionDuration = 0.7
+        self.animator.direction = ZFModalTransitonDirection.Right
+        
+        //设置webViewController
+        webViewController.transitioningDelegate = self.animator
+        
         //实施转场
-        self.navigationController?.pushViewController(webViewController, animated: true)
+        self.presentViewController(webViewController, animated: true) { () -> Void in
+            
+        }
     }
 }

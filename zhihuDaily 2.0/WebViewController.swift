@@ -66,7 +66,6 @@ class WebViewController: UIViewController, UIScrollViewDelegate, ParallaxHeaderV
     
     override func viewDidLoad() {
         super.viewDidLoad()
-        
         //避免因含有navBar而对scrollInsets做自动调整
         self.automaticallyAdjustsScrollViewInsets = false
         
@@ -115,6 +114,7 @@ class WebViewController: UIViewController, UIScrollViewDelegate, ParallaxHeaderV
     
     //加载图片
     func loadParallaxHeader(imageURL: String, imageSource: String, titleString: String) {
+        
         //设置展示的imageView
         imageView = UIImageView(frame: CGRectMake(0, 0, self.view.frame.width, 223))
         imageView.contentMode = .ScaleAspectFill
@@ -181,58 +181,70 @@ class WebViewController: UIViewController, UIScrollViewDelegate, ParallaxHeaderV
 
     //加载WebView
     func loadWebView(id: String) {
-        //获取网络数据，包括body css image image_source title 并拼接body与css后加载
+        //获取网络数据，包括body css image image_source title
         Alamofire.request(.GET, "http://news-at.zhihu.com/api/4/news/" + id).responseJSON { (_, _, dataResult) -> Void in
             guard dataResult.error == nil else {
                 print("获取数据失败")
                 return
             }
             
-            let body = JSON(dataResult.value!)["body"].string!
-            let css = JSON(dataResult.value!)["css"][0].string!
-            
-            if let image = JSON(dataResult.value!)["image"].string {
-                if let imageSource = JSON(dataResult.value!)["image_source"].string {
+            //若body存在 拼接body与css后加载
+            if let body = JSON(dataResult.value!)["body"].string {
+                let css = JSON(dataResult.value!)["css"][0].string!
+                
+                if let image = JSON(dataResult.value!)["image"].string {
                     if let titleString = JSON(dataResult.value!)["title"].string {
-                        self.loadParallaxHeader(image, imageSource: imageSource, titleString: titleString)
+                        if let imageSource = JSON(dataResult.value!)["image_source"].string {
+                            self.loadParallaxHeader(image, imageSource: imageSource, titleString: titleString)
+                        } else {
+                            self.loadParallaxHeader(image, imageSource: "(null)", titleString: titleString)
+                        }
+                        self.setNeedsStatusBarAppearanceUpdate()
                     }
+                } else {
+                    self.hasImage = false
+                    self.setNeedsStatusBarAppearanceUpdate()
+                    self.statusBarBackground.backgroundColor = UIColor.whiteColor()
+                    self.loadNormalHeader()
                 }
+                
+                var html = "<html>"
+                html += "<head>"
+                html += "<link rel=\"stylesheet\" href="
+                html += css
+                html += "</head>"
+                html += "<body>"
+                html += body
+                html += "</body>"
+                html += "</html>"
+                
+                self.webView.loadHTMLString(html, baseURL: nil)
             } else {
+                //若是直接使用share_url的类型
                 self.hasImage = false
+                self.setNeedsStatusBarAppearanceUpdate()
                 self.statusBarBackground.backgroundColor = UIColor.whiteColor()
                 self.loadNormalHeader()
+                
+                let url = JSON(dataResult.value!)["share_url"].string!
+                self.webView.loadRequest(NSURLRequest(URL: NSURL(string: url)!))
             }
-            
-            var html = "<html>"
-            html += "<head>"
-            html += "<link rel=\"stylesheet\" href="
-            html += css
-            html += "</head>"
-            html += "<body>"
-            html += body
-            html += "</body>"
-            html += "</html>"
-            
-            self.webView.loadHTMLString(html, baseURL: nil)
         }
+        
     }
     
     //实现Parallax效果
     func scrollViewDidScroll(scrollView: UIScrollView) {
-
         //判断是否含图
         if hasImage {
             let incrementY = scrollView.contentOffset.y
             if incrementY < 0 {
-                
                 //不断设置titleLabel及sourceLabel以保证frame正确
                 titleLabel.frame = CGRectMake(15, orginalHeight - 80 - incrementY, self.view.frame.width - 30, 60)
                 sourceLabel.frame = CGRectMake(15, orginalHeight - 20 - incrementY, self.view.frame.width - 30, 15)
                 
-                //不断添加删除blurView.layer.sublayers![0]以保证frame正确
+                //保证frame正确
                 blurView.frame = CGRectMake(0, -85 - incrementY, self.view.frame.width, orginalHeight + 85)
-                blurView.layer.sublayers![0].removeFromSuperlayer()
-                blurView.insertTwiceTransparentGradient()
                 
                 //如果下拉超过65pixels则改变图片方向
                 if incrementY <= -65 {
@@ -259,11 +271,23 @@ class WebViewController: UIViewController, UIScrollViewDelegate, ParallaxHeaderV
             if incrementY > 223 {
                 if statusBarFlag {
                     statusBarFlag = false
+                    if var parent = self.parentViewController {
+                        while (parent.parentViewController != nil) {
+                            parent = parent.parentViewController!
+                        }
+                        (parent as! WebViewController).statusBarFlag = false
+                    }
                 }
                 statusBarBackground.backgroundColor = UIColor.whiteColor()
             } else {
                 guard statusBarFlag else {
                     statusBarFlag = true
+                    if var parent = self.parentViewController {
+                        while (parent.parentViewController != nil) {
+                            parent = parent.parentViewController!
+                        }
+                        (parent as! WebViewController).statusBarFlag = true
+                    }
                     return
                 }
                 statusBarBackground.backgroundColor = UIColor.clearColor()
@@ -347,7 +371,15 @@ class WebViewController: UIViewController, UIScrollViewDelegate, ParallaxHeaderV
             let id = appCloud().themeContent!.stories[index].id
             toWebViewController.index = index
             toWebViewController.newsId = id
+            toWebViewController.isThemeStory = true
         }
+        
+        //取得已读新闻数组以供修改
+        var readNewsIdArray = NSUserDefaults.standardUserDefaults().objectForKey(Keys.readNewsId) as! [String]
+        
+        //记录已被选中的id
+        readNewsIdArray.append(toWebViewController.newsId)
+        NSUserDefaults.standardUserDefaults().setObject(readNewsIdArray, forKey: Keys.readNewsId)
         
         //生成原View截图并添加到主View上
         let fromView = self.view.snapshotViewAfterScreenUpdates(true)
@@ -377,9 +409,7 @@ class WebViewController: UIViewController, UIScrollViewDelegate, ParallaxHeaderV
         guard hasImage else {
             return .Default
         }
-        
         if statusBarFlag {
-            //bug：当切换页面后该函数调用的self是最初的self，其他更改的都是新self，所以这里会有问题
             return .LightContent
         }
         return .Default
@@ -404,12 +434,12 @@ class WebViewController: UIViewController, UIScrollViewDelegate, ParallaxHeaderV
 extension WebViewController: UIWebViewDelegate {
     func webView(webView: UIWebView, shouldStartLoadWithRequest request: NSURLRequest, navigationType: UIWebViewNavigationType) -> Bool {
         //暂时的处理方法，只允许查看文章内容 而不允许将其当做浏览器跳转，待修改
-        guard webView.request != nil else {
-            return true
-        }
-        if request != webView.request {
-            return false
-        }
+//        guard webView.request != nil else {
+//            return true
+//        }
+//        if request != webView.request {
+//            return false
+//        }
         return true
     }
 }
